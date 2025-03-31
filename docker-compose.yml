@@ -1,0 +1,14 @@
+version: '3'
+
+services:
+  crawler:
+    build: .
+    volumes:
+      - ./crawled_data:/app/crawled_data
+    environment:
+      - PYTHONUNBUFFERED=1
+    command: "${DOMAIN:-tripleten.com.br} --js-render-time 5 --delay 2 --max-pages 10 --max-depth 3"
+    # Adicionar estas configurações:
+    shm_size: '2gb'  # Aumentar tamanho da memória compartilhada
+    cap_add:
+      - SYS_ADMIN  # Adicionar permissões necessárias para o Chrome
