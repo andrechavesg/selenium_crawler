@@ -314,6 +314,139 @@ class JSDomainCrawler:
 
         return links
 
+    def _extract_pricing_info(self, soup):
+        """
+        Extrai e categoriza informações de preços da página.
+
+        Args:
+            soup: Objeto BeautifulSoup da página
+
+        Returns:
+            dict: Dicionário com informações de preços categorizados
+        """
+        pricing_info = {
+            'prices': {},
+            'currency': None
+        }
+
+        # Padrões de regex para capturar preços
+        price_patterns = [
+            r'((?:R\$|€|\$)\s*\d{1,3}(?:\.\d{3})*(?:,\d{2})?)',
+            r'((?:R\$|€|\$)\s*\d+(?:,\d{2})?)',
+            r'(\d+(?:,\d{2})?\s*(?:R\$|€|\$))'
+        ]
+
+        # Categorias de preço com palavras-chave
+        price_categories = {
+            'À Vista': ['à vista', 'avista', 'vista', 'cash', 'dinheiro', 'boleto'],
+            'Parcelado': ['parcelado', 'parcela', 'x de', 'parcelas', 'installment'],
+            'Promocional': ['promo', 'desconto', 'oferta', 'sale', 'discount'],
+            'Original': ['original', 'preço original', 'preço cheio'],
+            'Assinatura': ['mensalidade', 'assinatura', 'subscription', 'monthly'],
+            'Atacado': ['atacado', 'wholesale', 'quantidade'],
+            'Internacional': ['internacional', 'dollar', 'euro']
+        }
+
+        # Seletores para buscar elementos com preços
+        price_selectors = [
+            'span.price', 'div.price', 'p.price',
+            '.product-price', '.item-price', '.sale-price',
+            '[data-price]', '[class*="price"]', '[id*="price"]'
+        ]
+
+        # Dicionário para armazenar preços categorizados
+        categorized_prices = {}
+
+        # Buscar elementos de preço
+        for selector in price_selectors:
+            price_elements = soup.select(selector)
+
+            for element in price_elements:
+                text = element.get_text(strip=True).lower()
+
+                # Identificar categoria
+                category = 'Outros'
+                for cat, keywords in price_categories.items():
+                    if any(keyword in text for keyword in keywords):
+                        category = cat
+                        break
+
+                # Buscar preços
+                for pattern in price_patterns:
+                    matches = re.findall(pattern, text)
+
+                    for match in matches:
+                        # Normalizar valor do preço
+                        full_price = match[0] if isinstance(match, tuple) else match
+
+                        # Garantir formato correto
+                        if not re.match(r'^(?:R\$|€|\$)', full_price):
+                            full_price = f"R$ {full_price}" if ',' in full_price else full_price
+
+                        # Preparar categoria no dicionário se não existir
+                        if category not in categorized_prices:
+                            categorized_prices[category] = {
+                                'values': set(),
+                                'raw_texts': set()
+                            }
+
+                        # Adicionar informações
+                        categorized_prices[category]['values'].add(full_price)
+                        categorized_prices[category]['raw_texts'].add(text)
+
+                        # Detectar moeda
+                        if 'R$' in full_price:
+                            pricing_info['currency'] = 'BRL'
+                        elif '$' in full_price:
+                            pricing_info['currency'] = 'USD'
+                        elif '€' in full_price:
+                            pricing_info['currency'] = 'EUR'
+
+        # Converter para formato final
+        for category, details in categorized_prices.items():
+            pricing_info['prices'][category] = {
+                'values': list(details['values']),
+                'raw_texts': list(details['raw_texts'])
+            }
+
+        return pricing_info
+
+    def _find_price_description(self, price_element):
+        """
+        Encontra descrição para um elemento de preço.
+
+        Args:
+            price_element: Elemento BeautifulSoup contendo o preço
+
+        Returns:
+            str: Descrição do preço
+        """
+        # Lista de estratégias para encontrar descrição
+        description_strategies = [
+            # Buscar em elementos irmãos e pai
+            lambda: price_element.find_previous(['h1', 'h2', 'h3', 'p','span']),
+            lambda: price_element.find_previous('div'),
+            lambda: price_element.find_parent(['div', 'section']),
+        ]
+
+        # Tentar estratégias de busca de descrição
+        for strategy in description_strategies:
+            try:
+                context = strategy()
+                if context:
+                    # Extrair texto do contexto
+                    desc_text = context.get_text(strip=True)
+
+                    # Filtrar descrições muito curtas ou irrelevantes
+                    if desc_text and len(desc_text) > 3:
+                        # Limitar o tamanho da descrição
+                        return desc_text[:100]
+            except Exception:
+                continue
+
+        # Fallback se nenhuma descrição for encontrada
+        return "Preço"
+
     def _extract_body_content(self, html, url, ignored_tags=None):
         """
         Extrai conteúdo relevante de uma página HTML em formato Markdown.
@@ -344,10 +477,13 @@ class JSDomainCrawler:
         # Converter HTML para Markdown
         markdown_content = self._convert_html_to_markdown(soup)
 
+        pricing_info = self._extract_pricing_info(soup)
+
         return {
             'url': url,
             'title': title,
             'content': markdown_content,
+            'pricing': pricing_info,
             'timestamp': datetime.now().isoformat()
         }
 
