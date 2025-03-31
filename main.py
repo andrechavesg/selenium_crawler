@@ -76,18 +76,7 @@ class JSDomainCrawler:
         self.include_com_domain = False
         self.com_path_filter = None
 
-        # Verificar se deve incluir versões .com do domínio (caso específico para tripleten)
         self.allowed_domains = [domain_name]
-        self.is_com_domain = False
-
-        # Tratamento específico para o domínio tripleten.com.br
-        if domain_name == 'tripleten.com.br':
-            self.com_domain = 'tripleten.com'
-            self.include_com_domain = True
-            self.com_path_filter = '/pt-br'
-            self.allowed_domains.append(self.com_domain)
-            logging.info(
-                f"Também rastreando o domínio: {self.com_domain} (apenas URLs contendo '{self.com_path_filter}')")
 
         # Estruturas de dados para o rastreamento
         self.url_queue = []  # (url, depth)
@@ -614,7 +603,7 @@ def main():
     parser = argparse.ArgumentParser(description='Crawler com suporte a JavaScript para domínios específicos')
 
     # Argumentos obrigatórios
-    parser.add_argument('domain', help='Domínio para rastrear (ex: tripleten.com.br)')
+    parser.add_argument('domain', help='Domínio para rastrear (ex: example.com.br)')
 
     # Argumentos opcionais
     parser.add_argument('--js-render-time', type=int, default=3,

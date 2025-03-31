@@ -11,10 +11,11 @@
 
 ```bash
 # Crawler para um domínio específico
-docker-compose run crawler tripleten.com.br
+docker-compose run crawler exemplo.com.br
 
 # Configurações personalizadas
 docker-compose run crawler exemplo.com.br --max-pages 20 --max-depth 4
+docker-compose run crawler exemplo.com.br --max-pages 10 --max-depth 2
 ```
 
 ### 🔧 Parâmetros
