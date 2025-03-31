@@ -8,7 +8,7 @@ import re
 import time
 import traceback
 from datetime import datetime
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse, urljoin, urlunparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -34,7 +34,7 @@ USER_AGENTS = [
 
 class JSDomainCrawler:
     def __init__(self, domain_name, js_render_time=3, delay=1, max_pages=50,
-                 max_depth=2, respect_robots=True, concurrency=1, output_dir='crawled_data'):
+                 max_depth=2, respect_robots=False, concurrency=1, output_dir='crawled_data'):
         """
         Inicializa o crawler para um domínio específico.
 
@@ -48,8 +48,6 @@ class JSDomainCrawler:
             concurrency: Número de navegadores Selenium para usar simultaneamente
             output_dir: Diretório para salvar os resultados
         """
-        logging.info("----- PRE Crawler.")
-
         # Configurações básicas
         self.domain_name = domain_name
         self.base_url = f"https://{domain_name}"
@@ -98,7 +96,6 @@ class JSDomainCrawler:
 
         # Inicializar os drivers do Selenium
         self.drivers = self._initialize_selenium_drivers()
-        logging.info(f"DRIVERS: {self.drivers}")
 
     def _initialize_selenium_drivers(self):
         """
@@ -182,44 +179,63 @@ class JSDomainCrawler:
 
     def _normalize_url(self, url, base_url=None):
         """
-        Normaliza uma URL, convertendo caminhos relativos em absolutos e removendo fragmentos.
+        Normaliza URLs para evitar duplicações.
 
         Args:
-            url: A URL para normalizar
-            base_url: URL base para resolver URLs relativas
+            url (str): URL para normalizar
+            base_url (str, optional): URL base para resolução de URLs relativas
 
         Returns:
-            str: URL normalizada ou None se inválida
+            str: URL normalizada
         """
-        # Ignorar URLs vazias ou de email
-        if not url or url.startswith('mailto:') or url.startswith('tel:'):
-            return None
-
-        # Resolver URL relativa se houver uma URL base
+        # Resolve URL relativa se base_url for fornecida
         if base_url:
+            from urllib.parse import urljoin
             url = urljoin(base_url, url)
 
-        try:
-            parsed_url = urlparse(url)
+        # Parseia a URL
+        parsed_url = urlparse(url)
 
-            # Verificar se é uma URL inválida
-            if not parsed_url.netloc or not parsed_url.scheme:
-                return None
+        # Remove fragmentos
+        url_without_fragment = parsed_url._replace(fragment='')
 
-            # Normalizar para remover fragmentos e parâmetros desnecessários
-            normalized_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
+        # Normaliza o caminho
+        normalized_path = self._normalize_path(url_without_fragment.path)
+        url_without_fragment = url_without_fragment._replace(path=normalized_path)
 
-            # Remover barra final se não for a raiz
-            if len(parsed_url.path) > 1:
-                normalized_url = normalized_url.rstrip('/')
+        # Converte para string
+        normalized_url = urlunparse(url_without_fragment)
 
-            # Incluir query string se existir
-            if parsed_url.query:
-                normalized_url += f"?{parsed_url.query}"
+        # Remove a barra final, se existir, exceto para URLs raiz
+        if normalized_url.endswith('/') and normalized_url != f"{parsed_url.scheme}://{parsed_url.netloc}/":
+            normalized_url = normalized_url.rstrip('/')
 
-            return normalized_url
-        except Exception:
-            return None
+        # Remove o www. se presente
+        normalized_url = normalized_url.replace('://www.', '://')
+
+        # Padroniza o protocolo (https)
+        if normalized_url.startswith('http://'):
+            normalized_url = normalized_url.replace('http://', 'https://')
+
+        return normalized_url
+
+    def _normalize_path(self, path):
+        """
+        Normaliza o caminho da URL.
+
+        Args:
+            path (str): Caminho da URL
+
+        Returns:
+            str: Caminho normalizado
+        """
+        # Remove barras duplas
+        path = path.replace('//', '/')
+
+        # Remove barras no início e no final
+        path = path.strip('/')
+
+        return path
 
     def _is_allowed_url(self, url):
         """
@@ -298,40 +314,93 @@ class JSDomainCrawler:
 
         return links
 
-    def _extract_body_content(self, html, url):
+    def _extract_body_content(self, html, url, ignored_tags=None):
         """
-        Extrai conteúdo relevante de uma página HTML.
+        Extrai conteúdo relevante de uma página HTML em formato Markdown.
 
         Args:
             html: Conteúdo HTML da página
             url: URL da página
+            ignored_tags: Lista de tags para serem removidas (opcional)
 
         Returns:
-            dict: Conteúdo extraído e metadados
+            dict: Conteúdo extraído em Markdown e metadados
         """
+        # Obtém as tags a serem ignoradas dos kwargs (com fallback para tags padrão)
+        ignored_tags = getattr(self, '_extract_body_content_kwargs', {}).get(
+            'ignored_tags',
+            ['script', 'style', 'meta', 'link', 'img', 'svg', 'header', 'footer', 'nav']
+        )
+
         soup = BeautifulSoup(html, 'html.parser')
 
-        # Remover tags de script e estilo
-        for element in soup(['script', 'style', 'meta', 'link']):
+        # Remover tags especificadas
+        for element in soup(ignored_tags):
             element.decompose()
 
         # Extrair título
         title = soup.title.string if soup.title else ""
 
-        # Extrair texto
-        text = soup.get_text(separator='\n').strip()
-
-        # Limpar espaços em branco extras
-        text = re.sub(r'\n+', '\n', text)
-        text = re.sub(r' +', ' ', text)
+        # Converter HTML para Markdown
+        markdown_content = self._convert_html_to_markdown(soup)
 
         return {
             'url': url,
             'title': title,
-            'content': text,
-            'html': html,
+            'content': markdown_content,
             'timestamp': datetime.now().isoformat()
         }
+
+    def _convert_html_to_markdown(self, soup):
+        """
+        Converte conteúdo HTML para Markdown.
+
+        Args:
+            soup: Objeto BeautifulSoup
+
+        Returns:
+            str: Conteúdo em formato Markdown
+        """
+        # Processamento de cabeçalhos
+        for h in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+            level = int(h.name[1])
+            h.string = f"{'#' * level} {h.get_text()}"
+
+        # Processamento de links
+        for a in soup.find_all('a'):
+            if a.has_attr('href'):
+                a.string = f"[{a.get_text()}]({a['href']})"
+
+        # Processamento de ênfase
+        for strong in soup.find_all(['strong', 'b']):
+            strong.string = f"**{strong.get_text()}**"
+
+        for em in soup.find_all(['em', 'i']):
+            em.string = f"*{em.get_text()}*"
+
+        # Processamento de listas
+        for ul in soup.find_all('ul'):
+            for li in ul.find_all('li'):
+                li.string = f"- {li.get_text()}"
+
+        for ol in soup.find_all('ol'):
+            for i, li in enumerate(ol.find_all('li'), 1):
+                li.string = f"{i}. {li.get_text()}"
+
+        # Processamento de código
+        for code in soup.find_all('code'):
+            code.string = f"`{code.get_text()}`"
+
+        # Processamento de parágrafos
+        for p in soup.find_all('p'):
+            p.string = p.get_text()
+
+        # Limpar espaços em branco extras
+        markdown_text = soup.get_text(separator='\n').strip()
+        markdown_text = re.sub(r'\n+', '\n', markdown_text)
+        markdown_text = re.sub(r' +', ' ', markdown_text)
+
+        return markdown_text
 
     def _respect_crawl_delay(self, url):
         """
@@ -468,9 +537,6 @@ class JSDomainCrawler:
         Returns:
             list: Conteúdo extraído de todas as páginas rastreadas
         """
-        logging.info("----- PRE Crawl.")
-        logging.info(f"{self.drivers if hasattr(self, 'drivers') else None}")
-
         logging.info(f"Iniciando crawler no(s) domínio(s): {', '.join(self.allowed_domains)}")
 
         pages_processed = 0
@@ -597,39 +663,31 @@ class JSDomainCrawler:
 
 
 def main():
-    """
-    Função principal que processa os argumentos e inicia o crawler.
-    """
-    parser = argparse.ArgumentParser(description='Crawler com suporte a JavaScript para domínios específicos')
-
-    # Argumentos obrigatórios
-    parser.add_argument('domain', help='Domínio para rastrear (ex: example.com.br)')
-
-    # Argumentos opcionais
-    parser.add_argument('--js-render-time', type=int, default=3,
-                        help='Tempo de espera para renderização de JavaScript (segundos)')
-    parser.add_argument('--delay', type=float, default=1, help='Delay entre requisições (segundos)')
-    parser.add_argument('--max-pages', type=int, default=50, help='Número máximo de páginas para rastreamento')
-    parser.add_argument('--max-depth', type=int, default=2, help='Profundidade máxima do rastreamento')
-    parser.add_argument('--output-dir', default='crawled_data', help='Diretório para salvar os resultados')
-    parser.add_argument('--ignore-robots', action='store_true', help='Ignorar regras de robots.txt')
-    parser.add_argument('--selenium-instances', type=int, default=1, help='Número de instâncias do Selenium')
+    parser = argparse.ArgumentParser(description='Crawler para extração de conteúdo web')
+    parser.add_argument('url', help='URL para iniciar o crawling')
+    parser.add_argument('--max-pages', type=int, default=10,
+                        help='Número máximo de páginas para crawlear')
+    parser.add_argument('--max-depth', type=int, default=3,
+                        help='Profundidade máxima de navegação')
+    parser.add_argument('--ignored-tags', type=str, default='script,style,meta,link',
+                        help='Tags HTML para ignorar, separadas por vírgula')
 
     args = parser.parse_args()
 
-    # Inicializar e executar o crawler
+    # Converte a string de tags em uma lista
+    ignored_tags = [tag.strip() for tag in args.ignored_tags.split(',') if tag.strip()]
+
     crawler = JSDomainCrawler(
-        domain_name=args.domain,
-        js_render_time=args.js_render_time,
-        delay=args.delay,
+        domain_name=args.url,
         max_pages=args.max_pages,
-        max_depth=args.max_depth,
-        respect_robots=False,
-        concurrency=args.selenium_instances,
-        output_dir=args.output_dir
+        max_depth=args.max_depth
     )
 
-    # Iniciar o processo de rastreamento
+    # Passa as tags a serem ignoradas para o método de extração de conteúdo
+    crawler._extract_body_content_kwargs = {
+        'ignored_tags': ignored_tags
+    }
+
     crawler.crawl()
 
 

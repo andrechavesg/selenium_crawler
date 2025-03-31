@@ -15,7 +15,8 @@ docker-compose run crawler exemplo.com.br
 
 # Configurações personalizadas
 docker-compose run crawler exemplo.com.br --max-pages 20 --max-depth 4
-docker-compose run crawler exemplo.com.br --max-pages 10 --max-depth 2
+docker-compose run crawler exemplo.com.br --max-pages 10 --max-depth 2 --ignored-tags script,style,div
+docker-compose run crawler exemplo.com.br --max-pages 10 --max-depth 2 --delay 1s --js-render-time 2s 
 ```
 
 ### 🔧 Parâmetros
